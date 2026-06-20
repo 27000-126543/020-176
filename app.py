@@ -485,40 +485,51 @@ class SearchFrame(tk.Frame):
         # ===== 复查跟进 =====
         rc_filter = tk.Frame(self.recheck_container, bg=BG_COLOR)
         rc_filter.pack(fill='x', padx=30, pady=(10, 5))
-        tk.Label(rc_filter, text='联系状态：', font=FONT_LARGE, bg=BG_COLOR, fg='#303133').pack(side='left', padx=5)
-        self.rc_status_var = tk.StringVar(value='未联系')
+        tk.Label(rc_filter, text='闭环状态：', font=FONT_LARGE, bg=BG_COLOR, fg='#303133').pack(side='left', padx=5)
+        self.rc_conclusion_var = tk.StringVar(value='未完成')
+        rc_conc_combo = ttk.Combobox(rc_filter, textvariable=self.rc_conclusion_var,
+                                     values=['未完成', '已完成', '全部'],
+                                     font=FONT_LARGE, width=10, state='readonly')
+        rc_conc_combo.pack(side='left', padx=5)
+        tk.Label(rc_filter, text='联系状态：', font=FONT_LARGE, bg=BG_COLOR, fg='#303133').pack(side='left', padx=(15,5))
+        self.rc_status_var = tk.StringVar(value='全部')
         rc_combo = ttk.Combobox(rc_filter, textvariable=self.rc_status_var,
                                 values=['全部', '未联系', '已联系'],
                                 font=FONT_LARGE, width=10, state='readonly')
         rc_combo.pack(side='left', padx=5)
         tk.Button(rc_filter, text='刷新', font=FONT_LARGE, bg=BTN_COLOR, fg='white',
                   relief='flat', cursor='hand2', width=8, command=self._load_recheck).pack(side='left', padx=10)
+        tk.Button(rc_filter, text='按同电话批量已联系', font=FONT_LARGE, bg=BTN_WARN, fg='white',
+                  relief='flat', cursor='hand2', width=18, command=self._mark_phone_contacted).pack(side='right', padx=5)
         tk.Button(rc_filter, text='标记已联系', font=FONT_LARGE, bg=BTN_OK, fg='white',
                   relief='flat', cursor='hand2', width=12, command=self._mark_contacted).pack(side='right', padx=5)
         tk.Button(rc_filter, text='标记未联系', font=FONT_LARGE, bg='#ffffff', fg='#606266',
                   relief='flat', cursor='hand2', width=12, command=self._mark_uncontacted).pack(side='right', padx=5)
 
-        rc_columns = ('date', 'name', 'phone', 'doctor', 'teeth', 'contact', 'note')
-        self.recheck_tree = ttk.Treeview(self.recheck_container, columns=rc_columns, show='headings', height=16)
+        rc_columns = ('date', 'name', 'phone', 'doctor', 'teeth', 'contact', 'note', 'conclusion')
+        self.recheck_tree = ttk.Treeview(self.recheck_container, columns=rc_columns, show='headings', height=16, selectmode='extended')
         self.recheck_tree.heading('date', text='治疗日期')
         self.recheck_tree.heading('name', text='儿童姓名')
         self.recheck_tree.heading('phone', text='家长电话')
         self.recheck_tree.heading('doctor', text='医生')
         self.recheck_tree.heading('teeth', text='需复查牙位')
         self.recheck_tree.heading('contact', text='联系状态')
-        self.recheck_tree.heading('note', text='联系备注')
+        self.recheck_tree.heading('note', text='联系备注/时间')
+        self.recheck_tree.heading('conclusion', text='复查结论')
         self.recheck_tree.column('date', width=110, anchor='center')
         self.recheck_tree.column('name', width=100, anchor='center')
-        self.recheck_tree.column('phone', width=130, anchor='center')
-        self.recheck_tree.column('doctor', width=90, anchor='center')
-        self.recheck_tree.column('teeth', width=220, anchor='w')
+        self.recheck_tree.column('phone', width=120, anchor='center')
+        self.recheck_tree.column('doctor', width=80, anchor='center')
+        self.recheck_tree.column('teeth', width=160, anchor='w')
         self.recheck_tree.column('contact', width=90, anchor='center')
-        self.recheck_tree.column('note', width=200, anchor='w')
+        self.recheck_tree.column('note', width=240, anchor='w')
+        self.recheck_tree.column('conclusion', width=180, anchor='w')
         rc_style = ttk.Style()
         rc_style.configure('Rc.Treeview', font=FONT_NORMAL, rowheight=32)
         rc_style.configure('Rc.Treeview.Heading', font=FONT_LARGE)
         self.recheck_tree.configure(style='Rc.Treeview')
-        self.recheck_tree.tag_configure('done', background='#f6ffed', foreground='#389e0d')
+        self.recheck_tree.tag_configure('closed_done', background='#f6ffed', foreground='#389e0d')
+        self.recheck_tree.tag_configure('closed_contacted', background='#e6f7ff', foreground='#096dd9')
         self.recheck_tree.tag_configure('todo', background='#fff1f0', foreground='#cf1322')
 
         rc_frame = tk.Frame(self.recheck_container)
@@ -719,8 +730,15 @@ class SearchFrame(tk.Frame):
             contact_status = 1
         elif status == '未联系':
             contact_status = 0
+        conclusion = self.rc_conclusion_var.get()
+        conclusion_status = None
+        if conclusion == '未完成':
+            conclusion_status = 0
+        elif conclusion == '已完成':
+            conclusion_status = 1
         rows = db.get_recheck_list(year=year, month=month, doctor_id=doctor_id,
-                                   contact_status=contact_status, child_name=name)
+                                   contact_status=contact_status, child_name=name,
+                                   conclusion_status=conclusion_status)
         self.recheck_results = rows
         for r in rows:
             teeth_parts = []
@@ -728,10 +746,24 @@ class SearchFrame(tk.Frame):
                 if r.get(f'tooth{pos}_recheck'):
                     teeth_parts.append(pos)
             teeth_str = '、'.join(teeth_parts)
+            has_conclusion = bool(r.get('recheck_result') and str(r['recheck_result']).strip())
             is_contacted = r.get('contact_status') == 1
-            tag = 'done' if is_contacted else 'todo'
-            contact_text = '已联系' if is_contacted else '未联系'
-            note = (r.get('contact_note') or '')[:20]
+            if has_conclusion:
+                tag = 'closed_done'
+                contact_text = '已完成'
+            elif is_contacted:
+                tag = 'closed_contacted'
+                contact_text = '已联系'
+            else:
+                tag = 'todo'
+                contact_text = '未联系'
+            note_parts = []
+            if r.get('contacted_at'):
+                note_parts.append(r['contacted_at'][5:16])
+            if r.get('contact_note'):
+                note_parts.append(str(r['contact_note'])[:15])
+            note = ' | '.join(note_parts)
+            conclusion_str = (str(r.get('recheck_result') or '')).strip()[:18]
             self.recheck_tree.insert('', 'end', iid=str(r['id']), values=(
                 r['treatment_date'],
                 r['child_name'],
@@ -740,10 +772,26 @@ class SearchFrame(tk.Frame):
                 teeth_str,
                 contact_text,
                 note,
+                conclusion_str,
             ), tags=(tag,))
         total = len(rows)
-        contacted = sum(1 for r in rows if r.get('contact_status') == 1)
-        self.stat_label.config(text=f'需复查共 {total} 条，已联系 {contacted} 条，未联系 {total - contacted} 条')
+        closed_done = sum(1 for r in rows if r.get('recheck_result') and str(r['recheck_result']).strip())
+        contacted = sum(1 for r in rows if r.get('contact_status') == 1 and not (r.get('recheck_result') and str(r['recheck_result']).strip()))
+        todo = total - closed_done - contacted
+        self.stat_label.config(text=f'复查跟进共 {total} 条：已完成 {closed_done} 条，已联系未复查 {contacted} 条，未处理 {todo} 条')
+
+    def _get_selected_ids_and_phones(self):
+        sel = self.recheck_tree.selection()
+        ids = []
+        phones = set()
+        for iid in sel:
+            rid = int(iid)
+            ids.append(rid)
+            for r in self.recheck_results:
+                if r['id'] == rid and r.get('parent_phone'):
+                    phones.add(r['parent_phone'])
+                    break
+        return ids, phones
 
     def _open_recheck_detail(self, event):
         sel = self.recheck_tree.selection()
@@ -755,27 +803,45 @@ class SearchFrame(tk.Frame):
     def _mark_contacted(self):
         sel = self.recheck_tree.selection()
         if not sel:
-            messagebox.showinfo('提示', '请先选择要标记的记录')
+            messagebox.showinfo('提示', '请先选择要标记的记录（可多选）')
             return
-        note = simpledialog.askstring('联系备注', '请输入联系备注（可选）：', parent=self)
-        count = 0
-        for iid in sel:
-            rid = int(iid)
-            db.update_contact(rid, 1, note)
-            count += 1
+        note = simpledialog.askstring('联系备注', '请输入联系备注（可选，如：家长说下周三来）：', parent=self)
+        ids = [int(iid) for iid in sel]
+        count = db.update_contact_batch(ids, 1, note)
         messagebox.showinfo('成功', f'已标记 {count} 条为已联系')
         self._load_recheck()
 
     def _mark_uncontacted(self):
         sel = self.recheck_tree.selection()
         if not sel:
-            messagebox.showinfo('提示', '请先选择要标记的记录')
+            messagebox.showinfo('提示', '请先选择要标记的记录（可多选）')
             return
         if not messagebox.askyesno('确认', f'确认将选中的 {len(sel)} 条标记为未联系吗？'):
             return
-        for iid in sel:
-            rid = int(iid)
-            db.update_contact(rid, 0, '')
+        ids = [int(iid) for iid in sel]
+        db.update_contact_batch(ids, 0, '')
+        self._load_recheck()
+
+    def _mark_phone_contacted(self):
+        sel = self.recheck_tree.selection()
+        if not sel:
+            messagebox.showinfo('提示', '请先选择记录，同一个电话下的所有记录会一起标记')
+            return
+        _, phones = self._get_selected_ids_and_phones()
+        if not phones:
+            messagebox.showwarning('提示', '选中的记录里没有家长电话')
+            return
+        y = self.year_var.get()
+        m = self.month_var.get()
+        year = None if y == '全部' else int(y)
+        month = None if m == '全部' else int(m)
+        note = simpledialog.askstring('联系备注',
+                                      f'将对电话 {", ".join(sorted(phones))} 下当前筛选月份的所有需复查记录标记为已联系\n请输入联系备注：',
+                                      parent=self)
+        total = 0
+        for p in phones:
+            total += db.update_contact_by_phone(p, 1, note, year=year, month=month)
+        messagebox.showinfo('成功', f'涉及 {len(phones)} 个电话，共标记 {total} 条为已联系')
         self._load_recheck()
 
     # ===== 导出 =====
@@ -856,6 +922,8 @@ class SearchFrame(tk.Frame):
                 writer = csv.writer(f)
                 writer.writerow([f'{year}年{month}月 窝沟封闭月度汇总'])
                 writer.writerow([])
+
+                writer.writerow(['===== 一、医生汇总 ====='])
                 writer.writerow(['医生', '服务儿童数', '封闭牙数', '需复查记录数', '人均封闭牙数'])
                 total_child = 0
                 total_sealed = 0
@@ -873,8 +941,8 @@ class SearchFrame(tk.Frame):
                     avg_total = round(total_sealed / total_child, 1)
                     writer.writerow(['合计', total_child, total_sealed, total_recheck, avg_total])
                 writer.writerow([])
-                writer.writerow(['===== 各医生明细 ====='])
 
+                writer.writerow(['===== 二、各医生服务明细 ====='])
                 for s in summary:
                     writer.writerow([])
                     writer.writerow([f'【{s["doctor_name"]}】{s["children_count"]}人 / {s["sealed_teeth"]}颗牙 / {s["recheck_count"]}条需复查'])
@@ -905,6 +973,45 @@ class SearchFrame(tk.Frame):
                             '已联系' if r.get('contact_status') == 1 else '未联系',
                         ]
                         writer.writerow(row)
+
+                writer.writerow([])
+                writer.writerow(['===== 三、需复查明细（催单用）====='])
+                writer.writerow([])
+                writer.writerow(['--- 3.1 未完成复查（需重点跟进）---'])
+                writer.writerow([
+                    '医生', '治疗日期', '儿童姓名', '家长电话', '需复查牙位',
+                    '联系状态', '联系时间', '联系备注',
+                ])
+                for s in summary:
+                    doctor_id = s.get('doctor_id')
+                    pending_rows = db.get_recheck_list(year=year, month=month,
+                                                       doctor_id=doctor_id, conclusion_status=0)
+                    for r in pending_rows:
+                        teeth = '、'.join([p for p in db.TOOTH_POSITIONS if r.get(f'tooth{p}_recheck')])
+                        contact = '已联系' if r.get('contact_status') == 1 else '未联系'
+                        writer.writerow([
+                            s['doctor_name'], r['treatment_date'], r['child_name'],
+                            r.get('parent_phone') or '', teeth, contact,
+                            r.get('contacted_at') or '', (r.get('contact_note') or '')[:20],
+                        ])
+                writer.writerow([])
+                writer.writerow(['--- 3.2 已完成复查 ---'])
+                writer.writerow([
+                    '医生', '治疗日期', '儿童姓名', '家长电话', '需复查牙位',
+                    '复查结论', '联系状态',
+                ])
+                for s in summary:
+                    doctor_id = s.get('doctor_id')
+                    done_rows = db.get_recheck_list(year=year, month=month,
+                                                    doctor_id=doctor_id, conclusion_status=1)
+                    for r in done_rows:
+                        teeth = '、'.join([p for p in db.TOOTH_POSITIONS if r.get(f'tooth{p}_recheck')])
+                        contact = '已联系' if r.get('contact_status') == 1 else '未联系'
+                        writer.writerow([
+                            s['doctor_name'], r['treatment_date'], r['child_name'],
+                            r.get('parent_phone') or '', teeth,
+                            (r.get('recheck_result') or '')[:30], contact,
+                        ])
             messagebox.showinfo('成功', f'老板版汇总已导出到：\n{path}')
         except Exception as e:
             messagebox.showerror('错误', f'导出失败：{str(e)}')
@@ -917,7 +1024,7 @@ class DetailDialog(tk.Toplevel):
         self.on_saved = on_saved
         self.tooth_widgets = {}
         self.title('记录详情')
-        self.geometry('860x880')
+        self.geometry('900x960')
         self.configure(bg=BG_COLOR)
         self.transient(master)
         self.grab_set()
@@ -985,6 +1092,12 @@ class DetailDialog(tk.Toplevel):
         self.remark_text = tk.Text(extra, font=FONT_NORMAL, height=2, width=45)
         self.remark_text.insert('1.0', r.get('remark') or '')
         self.remark_text.grid(row=2, column=1, sticky='w', pady=4)
+
+        family = tk.LabelFrame(self, text='同电话家庭汇总（半年内）', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', padx=10, pady=8)
+        family.pack(fill='x', padx=30, pady=8)
+        self.family_summary_label = tk.Label(family, text='', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', justify='left', anchor='w')
+        self.family_summary_label.pack(fill='x', padx=5, pady=2)
+        self._load_family_summary()
 
         history = tk.LabelFrame(self, text='同电话的历史服务记录（半年内的在前 · 双击查看完整详情）', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', padx=10, pady=8)
         history.pack(fill='both', expand=True, padx=30, pady=8)
@@ -1096,11 +1209,37 @@ class DetailDialog(tk.Toplevel):
         if not iid.startswith('h_'):
             return
         rid = int(iid.replace('h_', ''))
-        DetailDialog(self, rid, on_saved=lambda: (self._load_history(), self._on_child_saved()))
+        DetailDialog(self, rid, on_saved=lambda: (self._load_history(), self._load_family_summary(), self._on_child_saved()))
 
     def _on_child_saved(self):
         if hasattr(self, 'on_saved') and self.on_saved:
             self.on_saved()
+
+    def _load_family_summary(self):
+        phone = self.record.get('parent_phone')
+        ref_date = self.record.get('treatment_date')
+        summary = db.get_phone_summary(phone, ref_date) if phone else None
+        if not summary:
+            self.family_summary_label.config(text='（未提供家长电话，无法统计家庭汇总）')
+            return
+        total_visits = summary.get('total_visits', 0)
+        all_time = summary.get('all_time_visits', 0)
+        sealed = summary.get('sealed_teeth', [])
+        pending = summary.get('pending_recheck_teeth', [])
+        pending_count = summary.get('pending_count', 0)
+        lines = []
+        lines.append(f'📋 半年内就诊 {total_visits} 次（累计 {all_time} 次）')
+        if sealed:
+            sealed_str = '、'.join([f'{p}({db.TOOTH_LABELS[p][:4]})' for p in sealed])
+            lines.append(f'✅ 半年内已封闭过的牙位：{sealed_str}')
+        else:
+            lines.append(f'✅ 半年内暂未做过封闭')
+        if pending:
+            pending_str = '、'.join([f'{p}({db.TOOTH_LABELS[p][:4]})' for p in pending])
+            lines.append(f'⚠️  还有 {pending_count} 条待复查，涉及牙位：{pending_str}')
+        else:
+            lines.append(f'✅ 半年内没有待复查的记录')
+        self.family_summary_label.config(text='\n'.join(lines))
 
     def _save(self):
         name = self.name_var.get().strip()
