@@ -198,3 +198,65 @@ def search_records(year=None, month=None, doctor_id=None, child_name=None):
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_history_by_phone(phone, exclude_id=None):
+    if not phone:
+        return []
+    conn = get_conn()
+    c = conn.cursor()
+    sql = '''
+        SELECT r.*, d.name as doctor_name FROM records r
+        LEFT JOIN doctors d ON r.doctor_id = d.id
+        WHERE r.parent_phone = ?
+    '''
+    params = [phone]
+    if exclude_id:
+        sql += ' AND r.id != ?'
+        params.append(exclude_id)
+    sql += ' ORDER BY r.treatment_date DESC, r.id DESC'
+    c.execute(sql, params)
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_monthly_summary(year, month):
+    start = f'{year:04d}-{month:02d}-01'
+    if month == 12:
+        end = f'{year+1:04d}-01-01'
+    else:
+        end = f'{year:04d}-{month+1:02d}-01'
+    conn = get_conn()
+    c = conn.cursor()
+    tooth_fields = []
+    for pos in TOOTH_POSITIONS:
+        tooth_fields.append(f'SUM(r.tooth{pos}_sealed)')
+        tooth_fields.append(f'SUM(r.tooth{pos}_recheck)')
+    tooth_sql = ', '.join(tooth_fields)
+    c.execute(f'''
+        SELECT r.doctor_id, d.name as doctor_name,
+               COUNT(DISTINCT r.id) as children_count,
+               {tooth_sql}
+        FROM records r
+        LEFT JOIN doctors d ON r.doctor_id = d.id
+        WHERE r.treatment_date >= ? AND r.treatment_date < ?
+        GROUP BY r.doctor_id, d.name
+        ORDER BY children_count DESC
+    ''', (start, end))
+    rows = c.fetchall()
+    result = []
+    for row in rows:
+        row_dict = dict(row)
+        sealed_total = 0
+        recheck_total = 0
+        for i, pos in enumerate(TOOTH_POSITIONS):
+            sealed_total += int(row_dict.pop(f'SUM(r.tooth{pos}_sealed)', 0) or 0)
+            recheck_total += int(row_dict.pop(f'SUM(r.tooth{pos}_recheck)', 0) or 0)
+        row_dict['sealed_teeth'] = sealed_total
+        row_dict['recheck_count'] = recheck_total
+        if not row_dict.get('doctor_name'):
+            row_dict['doctor_name'] = '未指定'
+        result.append(row_dict)
+    conn.close()
+    return result
