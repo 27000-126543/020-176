@@ -58,6 +58,10 @@ def init_db():
         c.execute('ALTER TABLE records ADD COLUMN contacted_at TEXT')
     if 'contact_note' not in cols:
         c.execute('ALTER TABLE records ADD COLUMN contact_note TEXT')
+    if 'contact_person' not in cols:
+        c.execute('ALTER TABLE records ADD COLUMN contact_person TEXT')
+    if 'appointment_date' not in cols:
+        c.execute('ALTER TABLE records ADD COLUMN appointment_date TEXT')
     c.execute('SELECT COUNT(*) FROM doctors')
     if c.fetchone()[0] == 0:
         for name in ['张医生', '李医生', '王医生']:
@@ -117,7 +121,9 @@ def insert_record(data):
     keys = ['child_name', 'birth_year', 'parent_phone', 'treatment_date', 'doctor_id']
     for pos in TOOTH_POSITIONS:
         keys += [f'tooth{pos}_sealed', f'tooth{pos}_photo', f'tooth{pos}_recheck']
-    keys += ['parent_feedback', 'recheck_result', 'remark', 'created_at', 'updated_at']
+    keys += ['parent_feedback', 'recheck_result', 'remark',
+             'contact_status', 'contacted_at', 'contact_note', 'contact_person', 'appointment_date',
+             'created_at', 'updated_at']
     values = []
     for k in ['child_name', 'birth_year', 'parent_phone', 'treatment_date', 'doctor_id']:
         values.append(data.get(k))
@@ -125,7 +131,13 @@ def insert_record(data):
         values.append(int(data.get(f'tooth{pos}_sealed', 0)))
         values.append(int(data.get(f'tooth{pos}_photo', 0)))
         values.append(int(data.get(f'tooth{pos}_recheck', 0)))
-    values += [data.get('parent_feedback', ''), data.get('recheck_result', ''), data.get('remark', ''), now, now]
+    values += [
+        data.get('parent_feedback', ''), data.get('recheck_result', ''), data.get('remark', ''),
+        int(data.get('contact_status', 0) or 0),
+        data.get('contacted_at'), data.get('contact_note', ''), data.get('contact_person', ''),
+        data.get('appointment_date'),
+        now, now,
+    ]
     placeholders = ', '.join(['?'] * len(keys))
     c.execute(f'INSERT INTO records ({", ".join(keys)}) VALUES ({placeholders})', values)
     rid = c.lastrowid
@@ -150,7 +162,7 @@ def update_record(rid, data):
             if key in data:
                 fields.append(f'{key} = ?')
                 values.append(int(data[key]))
-    for k in ['parent_feedback', 'recheck_result', 'remark']:
+    for k in ['parent_feedback', 'recheck_result', 'remark', 'contact_person', 'appointment_date']:
         if k in data:
             fields.append(f'{k} = ?')
             values.append(data[k])
@@ -271,7 +283,7 @@ def get_monthly_summary(year, month):
 
 
 def get_recheck_list(year=None, month=None, doctor_id=None, contact_status=None,
-                     child_name=None, conclusion_status=None):
+                     child_name=None, conclusion_status=None, appointment_filter=None):
     conn = get_conn()
     c = conn.cursor()
     recheck_expr = ' + '.join([f'COALESCE(r.tooth{p}_recheck, 0)' for p in TOOTH_POSITIONS])
@@ -306,35 +318,53 @@ def get_recheck_list(year=None, month=None, doctor_id=None, contact_status=None,
             sql += " AND (r.recheck_result IS NULL OR TRIM(r.recheck_result) = '')"
         else:
             sql += " AND r.recheck_result IS NOT NULL AND TRIM(r.recheck_result) != ''"
+    if appointment_filter:
+        today = datetime.now().strftime('%Y-%m-%d')
+        dt_today = datetime.strptime(today, '%Y-%m-%d')
+        if appointment_filter == 'today':
+            sql += ' AND r.appointment_date = ?'
+            params.append(today)
+        elif appointment_filter == 'week':
+            week_end = (dt_today + timedelta(days=7)).strftime('%Y-%m-%d')
+            sql += ' AND r.appointment_date >= ? AND r.appointment_date < ?'
+            params += [today, week_end]
+        elif appointment_filter == 'overdue':
+            sql += " AND r.appointment_date IS NOT NULL AND TRIM(r.appointment_date) != '' AND r.appointment_date < ?"
+            sql += " AND (r.recheck_result IS NULL OR TRIM(r.recheck_result) = '')"
+            params.append(today)
+        elif appointment_filter == 'appointed':
+            sql += " AND r.appointment_date IS NOT NULL AND TRIM(r.appointment_date) != ''"
+        elif appointment_filter == 'none':
+            sql += " AND (r.appointment_date IS NULL OR TRIM(r.appointment_date) = '')"
     if child_name:
         sql += ' AND r.child_name LIKE ?'
         params.append(f'%{child_name}%')
-    sql += ' ORDER BY r.treatment_date ASC, r.id ASC'
+    sql += ' ORDER BY COALESCE(r.appointment_date, r.treatment_date) ASC, r.id ASC'
     c.execute(sql, params)
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def update_contact(record_id, status, note=None):
+def update_contact(record_id, status, note=None, person=None):
     conn = get_conn()
     c = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     if status == 0:
         c.execute('''
             UPDATE records SET contact_status = 0, contacted_at = NULL,
-                   contact_note = ?, updated_at = ? WHERE id = ?
-        ''', (note or '', now, record_id))
+                   contact_note = ?, contact_person = ?, updated_at = ? WHERE id = ?
+        ''', (note or '', person or '', now, record_id))
     else:
         c.execute('''
             UPDATE records SET contact_status = 1, contacted_at = ?,
-                   contact_note = ?, updated_at = ? WHERE id = ?
-        ''', (now, note or '', now, record_id))
+                   contact_note = ?, contact_person = ?, updated_at = ? WHERE id = ?
+        ''', (now, note or '', person or '', now, record_id))
     conn.commit()
     conn.close()
 
 
-def update_contact_batch(record_ids, status, note=None):
+def update_contact_batch(record_ids, status, note=None, person=None):
     if not record_ids:
         return 0
     conn = get_conn()
@@ -344,20 +374,20 @@ def update_contact_batch(record_ids, status, note=None):
     if status == 0:
         c.execute(f'''
             UPDATE records SET contact_status = 0, contacted_at = NULL,
-                   contact_note = ?, updated_at = ? WHERE id IN ({placeholders})
-        ''', [note or '', now] + list(record_ids))
+                   contact_note = ?, contact_person = ?, updated_at = ? WHERE id IN ({placeholders})
+        ''', [note or '', person or '', now] + list(record_ids))
     else:
         c.execute(f'''
             UPDATE records SET contact_status = 1, contacted_at = ?,
-                   contact_note = ?, updated_at = ? WHERE id IN ({placeholders})
-        ''', [now, note or '', now] + list(record_ids))
+                   contact_note = ?, contact_person = ?, updated_at = ? WHERE id IN ({placeholders})
+        ''', [now, note or '', person or '', now] + list(record_ids))
     affected = c.rowcount
     conn.commit()
     conn.close()
     return affected
 
 
-def update_contact_by_phone(phone, status, note=None, year=None, month=None):
+def update_contact_by_phone(phone, status, note=None, person=None, year=None, month=None):
     if not phone:
         return 0
     conn = get_conn()
@@ -379,13 +409,34 @@ def update_contact_by_phone(phone, status, note=None, year=None, month=None):
     if status == 0:
         c.execute(f'''
             UPDATE records SET contact_status = 0, contacted_at = NULL,
-                   contact_note = ?, updated_at = ? WHERE {where_sql}
-        ''', [note or '', now] + params)
+                   contact_note = ?, contact_person = ?, updated_at = ? WHERE {where_sql}
+        ''', [note or '', person or '', now] + params)
     else:
         c.execute(f'''
             UPDATE records SET contact_status = 1, contacted_at = ?,
-                   contact_note = ?, updated_at = ? WHERE {where_sql}
-        ''', [now, note or '', now] + params)
+                   contact_note = ?, contact_person = ?, updated_at = ? WHERE {where_sql}
+        ''', [now, note or '', person or '', now] + params)
+    affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return affected
+
+
+def update_appointment(record_ids, appointment_date):
+    if not record_ids:
+        return 0
+    conn = get_conn()
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    placeholders = ', '.join(['?'] * len(record_ids))
+    if appointment_date:
+        c.execute(f'''
+            UPDATE records SET appointment_date = ?, updated_at = ? WHERE id IN ({placeholders})
+        ''', [appointment_date, now] + list(record_ids))
+    else:
+        c.execute(f'''
+            UPDATE records SET appointment_date = NULL, updated_at = ? WHERE id IN ({placeholders})
+        ''', [now] + list(record_ids))
     affected = c.rowcount
     conn.commit()
     conn.close()
@@ -407,14 +458,17 @@ def get_phone_summary(phone, ref_date=None):
     c = conn.cursor()
     recheck_expr = ' + '.join([f'COALESCE(tooth{p}_recheck, 0)' for p in TOOTH_POSITIONS])
     sealed_fields = []
-    recheck_fields = []
     for pos in TOOTH_POSITIONS:
         sealed_fields.append(f'MAX(tooth{pos}_sealed)')
-        recheck_fields.append(f'MAX(tooth{pos}_recheck)')
+    pending_expr_parts = []
+    for pos in TOOTH_POSITIONS:
+        pending_expr_parts.append(
+            f"MAX(CASE WHEN tooth{pos}_recheck = 1 AND (recheck_result IS NULL OR TRIM(recheck_result) = '') THEN 1 ELSE 0 END)"
+        )
     c.execute(f'''
         SELECT COUNT(DISTINCT id) as total_visits,
                {', '.join(sealed_fields)},
-               {', '.join(recheck_fields)},
+               {', '.join(pending_expr_parts)},
                SUM(CASE WHEN ({recheck_expr}) > 0 AND (recheck_result IS NULL OR TRIM(recheck_result) = '') THEN 1 ELSE 0 END) as pending_count
         FROM records
         WHERE parent_phone = ? AND treatment_date >= ? AND treatment_date < ?
@@ -426,7 +480,9 @@ def get_phone_summary(phone, ref_date=None):
     for pos in TOOTH_POSITIONS:
         if int(result.pop(f'MAX(tooth{pos}_sealed)', 0) or 0):
             all_sealed.append(pos)
-        if int(result.pop(f'MAX(tooth{pos}_recheck)', 0) or 0):
+    for pos in TOOTH_POSITIONS:
+        key = f"MAX(CASE WHEN tooth{pos}_recheck = 1 AND (recheck_result IS NULL OR TRIM(recheck_result) = '') THEN 1 ELSE 0 END)"
+        if int(result.pop(key, 0) or 0):
             all_pending.append(pos)
     result['sealed_teeth'] = all_sealed
     result['pending_recheck_teeth'] = all_pending
@@ -434,3 +490,43 @@ def get_phone_summary(phone, ref_date=None):
     result['all_time_visits'] = c.fetchone()[0]
     conn.close()
     return result
+
+
+def get_family_followup(phone, ref_date=None):
+    if not phone:
+        return []
+    conn = get_conn()
+    c = conn.cursor()
+    recheck_expr = ' + '.join([f'COALESCE(tooth{p}_recheck, 0)' for p in TOOTH_POSITIONS])
+    c.execute(f'''
+        SELECT r.*, d.name as doctor_name FROM records r
+        LEFT JOIN doctors d ON r.doctor_id = d.id
+        WHERE r.parent_phone = ?
+        ORDER BY r.treatment_date DESC, r.id DESC
+    ''', (phone,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    child_map = {}
+    for r in rows:
+        name = r.get('child_name') or '未知'
+        if name not in child_map:
+            pending_teeth = []
+            has_pending_record = False
+            for pos in TOOTH_POSITIONS:
+                if r.get(f'tooth{pos}_recheck') and not (r.get('recheck_result') and str(r['recheck_result']).strip()):
+                    pending_teeth.append(pos)
+            if pending_teeth:
+                has_pending_record = True
+            child_map[name] = {
+                'child_name': name,
+                'last_date': r.get('treatment_date'),
+                'last_doctor': r.get('doctor_name') or '',
+                'pending_teeth': pending_teeth,
+                'has_pending': has_pending_record,
+                'appointment_date': r.get('appointment_date'),
+                'contacted_at': r.get('contacted_at'),
+                'contact_note': r.get('contact_note') or '',
+                'contact_person': r.get('contact_person') or '',
+                'recheck_result': r.get('recheck_result') or '',
+            }
+    return sorted(child_map.values(), key=lambda x: x['last_date'] or '', reverse=True)

@@ -497,40 +497,54 @@ class SearchFrame(tk.Frame):
                                 values=['全部', '未联系', '已联系'],
                                 font=FONT_LARGE, width=10, state='readonly')
         rc_combo.pack(side='left', padx=5)
+        tk.Label(rc_filter, text='预约：', font=FONT_LARGE, bg=BG_COLOR, fg='#303133').pack(side='left', padx=(15,5))
+        self.rc_appt_var = tk.StringVar(value='全部')
+        rc_appt_combo = ttk.Combobox(rc_filter, textvariable=self.rc_appt_var,
+                                     values=['全部', '未预约', '今天', '本周内', '逾期未到', '已预约'],
+                                     font=FONT_LARGE, width=10, state='readonly')
+        rc_appt_combo.pack(side='left', padx=5)
         tk.Button(rc_filter, text='刷新', font=FONT_LARGE, bg=BTN_COLOR, fg='white',
                   relief='flat', cursor='hand2', width=8, command=self._load_recheck).pack(side='left', padx=10)
-        tk.Button(rc_filter, text='按同电话批量已联系', font=FONT_LARGE, bg=BTN_WARN, fg='white',
+        tk.Button(rc_filter, text='设置预约日期', font=FONT_LARGE, bg=BTN_WARN, fg='white',
+                  relief='flat', cursor='hand2', width=14, command=self._set_appointment).pack(side='right', padx=5)
+        tk.Button(rc_filter, text='按同电话批量已联系', font=FONT_LARGE, bg='#13c2c2', fg='white',
                   relief='flat', cursor='hand2', width=18, command=self._mark_phone_contacted).pack(side='right', padx=5)
         tk.Button(rc_filter, text='标记已联系', font=FONT_LARGE, bg=BTN_OK, fg='white',
                   relief='flat', cursor='hand2', width=12, command=self._mark_contacted).pack(side='right', padx=5)
         tk.Button(rc_filter, text='标记未联系', font=FONT_LARGE, bg='#ffffff', fg='#606266',
                   relief='flat', cursor='hand2', width=12, command=self._mark_uncontacted).pack(side='right', padx=5)
 
-        rc_columns = ('date', 'name', 'phone', 'doctor', 'teeth', 'contact', 'note', 'conclusion')
-        self.recheck_tree = ttk.Treeview(self.recheck_container, columns=rc_columns, show='headings', height=16, selectmode='extended')
+        rc_columns = ('date', 'name', 'phone', 'doctor', 'teeth', 'appointment', 'contact', 'person', 'note', 'conclusion')
+        self.recheck_tree = ttk.Treeview(self.recheck_container, columns=rc_columns, show='headings', height=14, selectmode='extended')
         self.recheck_tree.heading('date', text='治疗日期')
         self.recheck_tree.heading('name', text='儿童姓名')
         self.recheck_tree.heading('phone', text='家长电话')
         self.recheck_tree.heading('doctor', text='医生')
         self.recheck_tree.heading('teeth', text='需复查牙位')
+        self.recheck_tree.heading('appointment', text='预约日期')
         self.recheck_tree.heading('contact', text='联系状态')
+        self.recheck_tree.heading('person', text='联系人')
         self.recheck_tree.heading('note', text='联系备注/时间')
         self.recheck_tree.heading('conclusion', text='复查结论')
-        self.recheck_tree.column('date', width=110, anchor='center')
-        self.recheck_tree.column('name', width=100, anchor='center')
-        self.recheck_tree.column('phone', width=120, anchor='center')
-        self.recheck_tree.column('doctor', width=80, anchor='center')
-        self.recheck_tree.column('teeth', width=160, anchor='w')
-        self.recheck_tree.column('contact', width=90, anchor='center')
-        self.recheck_tree.column('note', width=240, anchor='w')
-        self.recheck_tree.column('conclusion', width=180, anchor='w')
+        self.recheck_tree.column('date', width=100, anchor='center')
+        self.recheck_tree.column('name', width=90, anchor='center')
+        self.recheck_tree.column('phone', width=110, anchor='center')
+        self.recheck_tree.column('doctor', width=70, anchor='center')
+        self.recheck_tree.column('teeth', width=130, anchor='w')
+        self.recheck_tree.column('appointment', width=100, anchor='center')
+        self.recheck_tree.column('contact', width=80, anchor='center')
+        self.recheck_tree.column('person', width=80, anchor='center')
+        self.recheck_tree.column('note', width=210, anchor='w')
+        self.recheck_tree.column('conclusion', width=160, anchor='w')
         rc_style = ttk.Style()
         rc_style.configure('Rc.Treeview', font=FONT_NORMAL, rowheight=32)
         rc_style.configure('Rc.Treeview.Heading', font=FONT_LARGE)
         self.recheck_tree.configure(style='Rc.Treeview')
         self.recheck_tree.tag_configure('closed_done', background='#f6ffed', foreground='#389e0d')
         self.recheck_tree.tag_configure('closed_contacted', background='#e6f7ff', foreground='#096dd9')
-        self.recheck_tree.tag_configure('todo', background='#fff1f0', foreground='#cf1322')
+        self.recheck_tree.tag_configure('appointed', background='#fff7e6', foreground='#d46b08')
+        self.recheck_tree.tag_configure('overdue', background='#fff1f0', foreground='#cf1322')
+        self.recheck_tree.tag_configure('todo', background='#fafafa', foreground='#606266')
 
         rc_frame = tk.Frame(self.recheck_container)
         rc_frame.pack(fill='both', expand=True, padx=30, pady=10)
@@ -736,10 +750,14 @@ class SearchFrame(tk.Frame):
             conclusion_status = 0
         elif conclusion == '已完成':
             conclusion_status = 1
+        appt = self.rc_appt_var.get()
+        appt_map = {'未预约': 'none', '今天': 'today', '本周内': 'week', '逾期未到': 'overdue', '已预约': 'appointed'}
+        appointment_filter = appt_map.get(appt)
         rows = db.get_recheck_list(year=year, month=month, doctor_id=doctor_id,
                                    contact_status=contact_status, child_name=name,
-                                   conclusion_status=conclusion_status)
+                                   conclusion_status=conclusion_status, appointment_filter=appointment_filter)
         self.recheck_results = rows
+        today_str = datetime.now().strftime('%Y-%m-%d')
         for r in rows:
             teeth_parts = []
             for pos in db.TOOTH_POSITIONS:
@@ -748,9 +766,19 @@ class SearchFrame(tk.Frame):
             teeth_str = '、'.join(teeth_parts)
             has_conclusion = bool(r.get('recheck_result') and str(r['recheck_result']).strip())
             is_contacted = r.get('contact_status') == 1
+            appt_date = r.get('appointment_date') or ''
+            overdue = False
+            if appt_date and not has_conclusion and appt_date < today_str:
+                overdue = True
             if has_conclusion:
                 tag = 'closed_done'
                 contact_text = '已完成'
+            elif overdue:
+                tag = 'overdue'
+                contact_text = '逾期未到' if is_contacted else '逾期'
+            elif appt_date:
+                tag = 'appointed'
+                contact_text = '已预约'
             elif is_contacted:
                 tag = 'closed_contacted'
                 contact_text = '已联系'
@@ -761,24 +789,30 @@ class SearchFrame(tk.Frame):
             if r.get('contacted_at'):
                 note_parts.append(r['contacted_at'][5:16])
             if r.get('contact_note'):
-                note_parts.append(str(r['contact_note'])[:15])
+                note_parts.append(str(r['contact_note'])[:12])
             note = ' | '.join(note_parts)
-            conclusion_str = (str(r.get('recheck_result') or '')).strip()[:18]
+            conclusion_str = (str(r.get('recheck_result') or '')).strip()[:16]
+            person = (str(r.get('contact_person') or '')).strip()[:8]
+            appt_show = appt_date[:5] if appt_date else ''
             self.recheck_tree.insert('', 'end', iid=str(r['id']), values=(
                 r['treatment_date'],
                 r['child_name'],
                 r.get('parent_phone') or '',
                 r.get('doctor_name') or '',
                 teeth_str,
+                appt_show,
                 contact_text,
+                person,
                 note,
                 conclusion_str,
             ), tags=(tag,))
         total = len(rows)
         closed_done = sum(1 for r in rows if r.get('recheck_result') and str(r['recheck_result']).strip())
-        contacted = sum(1 for r in rows if r.get('contact_status') == 1 and not (r.get('recheck_result') and str(r['recheck_result']).strip()))
-        todo = total - closed_done - contacted
-        self.stat_label.config(text=f'复查跟进共 {total} 条：已完成 {closed_done} 条，已联系未复查 {contacted} 条，未处理 {todo} 条')
+        today = datetime.now().strftime('%Y-%m-%d')
+        overdue_cnt = sum(1 for r in rows if r.get('appointment_date') and not (r.get('recheck_result') and str(r['recheck_result']).strip()) and r['appointment_date'] < today)
+        appointed_cnt = sum(1 for r in rows if r.get('appointment_date') and not (r.get('recheck_result') and str(r['recheck_result']).strip()) and r['appointment_date'] >= today)
+        todo = total - closed_done - appointed_cnt - overdue_cnt
+        self.stat_label.config(text=f'复查跟进共 {total} 条：已完成 {closed_done} 条｜已预约 {appointed_cnt} 条｜逾期 {overdue_cnt} 条｜未处理 {todo} 条')
 
     def _get_selected_ids_and_phones(self):
         sel = self.recheck_tree.selection()
@@ -806,8 +840,9 @@ class SearchFrame(tk.Frame):
             messagebox.showinfo('提示', '请先选择要标记的记录（可多选）')
             return
         note = simpledialog.askstring('联系备注', '请输入联系备注（可选，如：家长说下周三来）：', parent=self)
+        person = simpledialog.askstring('联系人姓名', '请输入联系人姓名（可选，如：妈妈/爸爸/奶奶）：', parent=self)
         ids = [int(iid) for iid in sel]
-        count = db.update_contact_batch(ids, 1, note)
+        count = db.update_contact_batch(ids, 1, note, person)
         messagebox.showinfo('成功', f'已标记 {count} 条为已联系')
         self._load_recheck()
 
@@ -819,7 +854,7 @@ class SearchFrame(tk.Frame):
         if not messagebox.askyesno('确认', f'确认将选中的 {len(sel)} 条标记为未联系吗？'):
             return
         ids = [int(iid) for iid in sel]
-        db.update_contact_batch(ids, 0, '')
+        db.update_contact_batch(ids, 0, '', '')
         self._load_recheck()
 
     def _mark_phone_contacted(self):
@@ -838,10 +873,37 @@ class SearchFrame(tk.Frame):
         note = simpledialog.askstring('联系备注',
                                       f'将对电话 {", ".join(sorted(phones))} 下当前筛选月份的所有需复查记录标记为已联系\n请输入联系备注：',
                                       parent=self)
+        person = simpledialog.askstring('联系人姓名', '请输入联系人姓名（如：妈妈）：', parent=self)
         total = 0
         for p in phones:
-            total += db.update_contact_by_phone(p, 1, note, year=year, month=month)
+            total += db.update_contact_by_phone(p, 1, note, person, year=year, month=month)
         messagebox.showinfo('成功', f'涉及 {len(phones)} 个电话，共标记 {total} 条为已联系')
+        self._load_recheck()
+
+    def _set_appointment(self):
+        sel = self.recheck_tree.selection()
+        if not sel:
+            messagebox.showinfo('提示', '请先选择要设置预约的记录（可多选）')
+            return
+        default_date = (datetime.now() + timedelta(days=3)).strftime('%Y-%m-%d')
+        date_str = simpledialog.askstring('设置预约复查日期',
+                                          f'请输入预约日期（格式：YYYY-MM-DD，留空表示取消预约）\n默认：{default_date}',
+                                          parent=self, initialvalue=default_date)
+        if date_str is None:
+            return
+        date_str = date_str.strip()
+        if date_str:
+            try:
+                datetime.strptime(date_str, '%Y-%m-%d')
+            except ValueError:
+                messagebox.showwarning('提示', '日期格式错误，应为 YYYY-MM-DD')
+                return
+        ids = [int(iid) for iid in sel]
+        count = db.update_appointment(ids, date_str or None)
+        if date_str:
+            messagebox.showinfo('成功', f'已为 {count} 条记录设置预约日期：{date_str}')
+        else:
+            messagebox.showinfo('成功', f'已取消 {count} 条记录的预约日期')
         self._load_recheck()
 
     # ===== 导出 =====
@@ -864,7 +926,7 @@ class SearchFrame(tk.Frame):
         ]
         for pos in db.TOOTH_POSITIONS:
             headers += [f'{pos}封闭', f'{pos}拍照', f'{pos}复查']
-        headers += ['家长反馈', '复查结果', '备注', '联系状态', '联系时间', '联系备注', '创建时间', '更新时间']
+        headers += ['家长反馈', '复查结果', '备注', '联系状态', '联系人', '联系时间', '联系备注', '预约复查日期', '创建时间', '更新时间']
         try:
             with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
@@ -888,8 +950,10 @@ class SearchFrame(tk.Frame):
                         r.get('recheck_result', ''),
                         r.get('remark', ''),
                         '已联系' if r.get('contact_status') == 1 else '未联系',
+                        r.get('contact_person') or '',
                         r.get('contacted_at') or '',
                         r.get('contact_note') or '',
+                        r.get('appointment_date') or '',
                         r.get('created_at', ''),
                         r.get('updated_at', ''),
                     ]
@@ -975,42 +1039,77 @@ class SearchFrame(tk.Frame):
                         writer.writerow(row)
 
                 writer.writerow([])
-                writer.writerow(['===== 三、需复查明细（催单用）====='])
+                writer.writerow(['===== 三、预约复查台账（月底催单用）====='])
                 writer.writerow([])
-                writer.writerow(['--- 3.1 未完成复查（需重点跟进）---'])
-                writer.writerow([
+
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                recheck_headers = [
                     '医生', '治疗日期', '儿童姓名', '家长电话', '需复查牙位',
-                    '联系状态', '联系时间', '联系备注',
-                ])
+                    '预约复查日期', '联系人', '联系时间', '联系备注',
+                ]
+
+                writer.writerow(['--- 3.1 未完成且未预约（需立刻打电话）---'])
+                writer.writerow(recheck_headers)
                 for s in summary:
                     doctor_id = s.get('doctor_id')
-                    pending_rows = db.get_recheck_list(year=year, month=month,
-                                                       doctor_id=doctor_id, conclusion_status=0)
-                    for r in pending_rows:
+                    pending = db.get_recheck_list(year=year, month=month, doctor_id=doctor_id, conclusion_status=0, appointment_filter='none')
+                    for r in pending:
                         teeth = '、'.join([p for p in db.TOOTH_POSITIONS if r.get(f'tooth{p}_recheck')])
-                        contact = '已联系' if r.get('contact_status') == 1 else '未联系'
                         writer.writerow([
                             s['doctor_name'], r['treatment_date'], r['child_name'],
-                            r.get('parent_phone') or '', teeth, contact,
-                            r.get('contacted_at') or '', (r.get('contact_note') or '')[:20],
+                            r.get('parent_phone') or '', teeth, r.get('appointment_date') or '',
+                            r.get('contact_person') or '', r.get('contacted_at') or '',
+                            (r.get('contact_note') or '')[:20],
                         ])
+
                 writer.writerow([])
-                writer.writerow(['--- 3.2 已完成复查 ---'])
+                writer.writerow(['--- 3.2 已预约待到院 ---'])
+                writer.writerow(recheck_headers)
+                for s in summary:
+                    doctor_id = s.get('doctor_id')
+                    appointed = db.get_recheck_list(year=year, month=month, doctor_id=doctor_id, conclusion_status=0, appointment_filter='appointed')
+                    for r in appointed:
+                        if not r.get('appointment_date') or r['appointment_date'] < today_str:
+                            continue
+                        teeth = '、'.join([p for p in db.TOOTH_POSITIONS if r.get(f'tooth{p}_recheck')])
+                        writer.writerow([
+                            s['doctor_name'], r['treatment_date'], r['child_name'],
+                            r.get('parent_phone') or '', teeth, r.get('appointment_date') or '',
+                            r.get('contact_person') or '', r.get('contacted_at') or '',
+                            (r.get('contact_note') or '')[:20],
+                        ])
+
+                writer.writerow([])
+                writer.writerow(['--- 3.3 预约逾期未到（重点催单）---'])
+                writer.writerow(recheck_headers)
+                for s in summary:
+                    doctor_id = s.get('doctor_id')
+                    overdue = db.get_recheck_list(year=year, month=month, doctor_id=doctor_id, conclusion_status=0, appointment_filter='overdue')
+                    for r in overdue:
+                        teeth = '、'.join([p for p in db.TOOTH_POSITIONS if r.get(f'tooth{p}_recheck')])
+                        writer.writerow([
+                            s['doctor_name'], r['treatment_date'], r['child_name'],
+                            r.get('parent_phone') or '', teeth, r.get('appointment_date') or '',
+                            r.get('contact_person') or '', r.get('contacted_at') or '',
+                            (r.get('contact_note') or '')[:20],
+                        ])
+
+                writer.writerow([])
+                writer.writerow(['--- 3.4 已完成复查 ---'])
                 writer.writerow([
                     '医生', '治疗日期', '儿童姓名', '家长电话', '需复查牙位',
-                    '复查结论', '联系状态',
+                    '复查结论', '联系人', '联系时间',
                 ])
                 for s in summary:
                     doctor_id = s.get('doctor_id')
-                    done_rows = db.get_recheck_list(year=year, month=month,
-                                                    doctor_id=doctor_id, conclusion_status=1)
+                    done_rows = db.get_recheck_list(year=year, month=month, doctor_id=doctor_id, conclusion_status=1)
                     for r in done_rows:
                         teeth = '、'.join([p for p in db.TOOTH_POSITIONS if r.get(f'tooth{p}_recheck')])
-                        contact = '已联系' if r.get('contact_status') == 1 else '未联系'
                         writer.writerow([
                             s['doctor_name'], r['treatment_date'], r['child_name'],
                             r.get('parent_phone') or '', teeth,
-                            (r.get('recheck_result') or '')[:30], contact,
+                            (r.get('recheck_result') or '')[:30],
+                            r.get('contact_person') or '', r.get('contacted_at') or '',
                         ])
             messagebox.showinfo('成功', f'老板版汇总已导出到：\n{path}')
         except Exception as e:
@@ -1024,7 +1123,7 @@ class DetailDialog(tk.Toplevel):
         self.on_saved = on_saved
         self.tooth_widgets = {}
         self.title('记录详情')
-        self.geometry('900x960')
+        self.geometry('940x1040')
         self.configure(bg=BG_COLOR)
         self.transient(master)
         self.grab_set()
@@ -1093,10 +1192,30 @@ class DetailDialog(tk.Toplevel):
         self.remark_text.insert('1.0', r.get('remark') or '')
         self.remark_text.grid(row=2, column=1, sticky='w', pady=4)
 
-        family = tk.LabelFrame(self, text='同电话家庭汇总（半年内）', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', padx=10, pady=8)
+        family = tk.LabelFrame(self, text='同电话家庭随访卡（每个孩子最近一次记录）', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', padx=10, pady=8)
         family.pack(fill='x', padx=30, pady=8)
-        self.family_summary_label = tk.Label(family, text='', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', justify='left', anchor='w')
-        self.family_summary_label.pack(fill='x', padx=5, pady=2)
+        fam_cols = ('name', 'last_date', 'doctor', 'pending', 'appointment', 'person', 'note')
+        self.family_tree = ttk.Treeview(family, columns=fam_cols, show='headings', height=4)
+        self.family_tree.heading('name', text='儿童姓名')
+        self.family_tree.heading('last_date', text='最近治疗')
+        self.family_tree.heading('doctor', text='医生')
+        self.family_tree.heading('pending', text='待复查牙位')
+        self.family_tree.heading('appointment', text='预约日期')
+        self.family_tree.heading('person', text='联系人')
+        self.family_tree.heading('note', text='最近联系备注')
+        self.family_tree.column('name', width=100, anchor='center')
+        self.family_tree.column('last_date', width=110, anchor='center')
+        self.family_tree.column('doctor', width=80, anchor='center')
+        self.family_tree.column('pending', width=200, anchor='w')
+        self.family_tree.column('appointment', width=110, anchor='center')
+        self.family_tree.column('person', width=80, anchor='center')
+        self.family_tree.column('note', width=240, anchor='w')
+        fam_style = ttk.Style()
+        fam_style.configure('Fam.Treeview', font=FONT_NORMAL, rowheight=28)
+        fam_style.configure('Fam.Treeview.Heading', font=FONT_NORMAL)
+        self.family_tree.configure(style='Fam.Treeview')
+        self.family_tree.tag_configure('has_pending', background='#fff7e6', foreground='#d46b08')
+        self.family_tree.pack(fill='x', expand=False)
         self._load_family_summary()
 
         history = tk.LabelFrame(self, text='同电话的历史服务记录（半年内的在前 · 双击查看完整详情）', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', padx=10, pady=8)
@@ -1216,30 +1335,38 @@ class DetailDialog(tk.Toplevel):
             self.on_saved()
 
     def _load_family_summary(self):
+        for i in self.family_tree.get_children():
+            self.family_tree.delete(i)
         phone = self.record.get('parent_phone')
-        ref_date = self.record.get('treatment_date')
-        summary = db.get_phone_summary(phone, ref_date) if phone else None
-        if not summary:
-            self.family_summary_label.config(text='（未提供家长电话，无法统计家庭汇总）')
+        if not phone:
+            self.family_tree.insert('', 'end', values=('（未填写家长电话）', '', '', '', '', '', ''))
             return
-        total_visits = summary.get('total_visits', 0)
-        all_time = summary.get('all_time_visits', 0)
-        sealed = summary.get('sealed_teeth', [])
-        pending = summary.get('pending_recheck_teeth', [])
-        pending_count = summary.get('pending_count', 0)
-        lines = []
-        lines.append(f'📋 半年内就诊 {total_visits} 次（累计 {all_time} 次）')
-        if sealed:
-            sealed_str = '、'.join([f'{p}({db.TOOTH_LABELS[p][:4]})' for p in sealed])
-            lines.append(f'✅ 半年内已封闭过的牙位：{sealed_str}')
-        else:
-            lines.append(f'✅ 半年内暂未做过封闭')
-        if pending:
-            pending_str = '、'.join([f'{p}({db.TOOTH_LABELS[p][:4]})' for p in pending])
-            lines.append(f'⚠️  还有 {pending_count} 条待复查，涉及牙位：{pending_str}')
-        else:
-            lines.append(f'✅ 半年内没有待复查的记录')
-        self.family_summary_label.config(text='\n'.join(lines))
+        fam_list = db.get_family_followup(phone, self.record.get('treatment_date'))
+        if not fam_list:
+            self.family_tree.insert('', 'end', values=('（暂无家庭记录）', '', '', '', '', '', ''))
+            return
+        for c in fam_list:
+            pending_str = '、'.join(c.get('pending_teeth') or [])
+            if c.get('has_pending') and not pending_str:
+                pending_str = '有(暂无牙位详情)'
+            if not pending_str:
+                pending_str = '—'
+            tags = ('has_pending',) if c.get('has_pending') else ()
+            note_parts = []
+            if c.get('contacted_at'):
+                note_parts.append(str(c['contacted_at'])[:16])
+            if c.get('contact_note'):
+                note_parts.append(str(c['contact_note'])[:15])
+            note_str = ' | '.join(note_parts) or '—'
+            self.family_tree.insert('', 'end', values=(
+                c.get('child_name', ''),
+                c.get('last_date') or '—',
+                c.get('last_doctor') or '—',
+                pending_str,
+                c.get('appointment_date') or '—',
+                c.get('contact_person') or '—',
+                note_str,
+            ), tags=tags)
 
     def _save(self):
         name = self.name_var.get().strip()
