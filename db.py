@@ -50,6 +50,14 @@ def init_db():
             updated_at TEXT
         )
     ''')
+    c.execute("PRAGMA table_info(records)")
+    cols = [row['name'] for row in c.fetchall()]
+    if 'contact_status' not in cols:
+        c.execute('ALTER TABLE records ADD COLUMN contact_status INTEGER DEFAULT 0')
+    if 'contacted_at' not in cols:
+        c.execute('ALTER TABLE records ADD COLUMN contacted_at TEXT')
+    if 'contact_note' not in cols:
+        c.execute('ALTER TABLE records ADD COLUMN contact_note TEXT')
     c.execute('SELECT COUNT(*) FROM doctors')
     if c.fetchone()[0] == 0:
         for name in ['张医生', '李医生', '王医生']:
@@ -229,15 +237,16 @@ def get_monthly_summary(year, month):
         end = f'{year:04d}-{month+1:02d}-01'
     conn = get_conn()
     c = conn.cursor()
-    tooth_fields = []
+    sealed_fields = []
     for pos in TOOTH_POSITIONS:
-        tooth_fields.append(f'SUM(r.tooth{pos}_sealed)')
-        tooth_fields.append(f'SUM(r.tooth{pos}_recheck)')
-    tooth_sql = ', '.join(tooth_fields)
+        sealed_fields.append(f'SUM(r.tooth{pos}_sealed)')
+    sealed_sql = ', '.join(sealed_fields)
+    recheck_expr = ' + '.join([f'COALESCE(r.tooth{p}_recheck, 0)' for p in TOOTH_POSITIONS])
     c.execute(f'''
         SELECT r.doctor_id, d.name as doctor_name,
                COUNT(DISTINCT r.id) as children_count,
-               {tooth_sql}
+               {sealed_sql},
+               SUM(CASE WHEN ({recheck_expr}) > 0 THEN 1 ELSE 0 END) as recheck_records
         FROM records r
         LEFT JOIN doctors d ON r.doctor_id = d.id
         WHERE r.treatment_date >= ? AND r.treatment_date < ?
@@ -249,14 +258,71 @@ def get_monthly_summary(year, month):
     for row in rows:
         row_dict = dict(row)
         sealed_total = 0
-        recheck_total = 0
-        for i, pos in enumerate(TOOTH_POSITIONS):
-            sealed_total += int(row_dict.pop(f'SUM(r.tooth{pos}_sealed)', 0) or 0)
-            recheck_total += int(row_dict.pop(f'SUM(r.tooth{pos}_recheck)', 0) or 0)
+        for pos in TOOTH_POSITIONS:
+            key = f'SUM(r.tooth{pos}_sealed)'
+            sealed_total += int(row_dict.pop(key, 0) or 0)
         row_dict['sealed_teeth'] = sealed_total
-        row_dict['recheck_count'] = recheck_total
+        row_dict['recheck_count'] = int(row_dict.pop('recheck_records', 0) or 0)
         if not row_dict.get('doctor_name'):
             row_dict['doctor_name'] = '未指定'
         result.append(row_dict)
     conn.close()
     return result
+
+
+def get_recheck_list(year=None, month=None, doctor_id=None, contact_status=None, child_name=None):
+    conn = get_conn()
+    c = conn.cursor()
+    recheck_expr = ' + '.join([f'COALESCE(r.tooth{p}_recheck, 0)' for p in TOOTH_POSITIONS])
+    sql = f'''
+        SELECT r.*, d.name as doctor_name FROM records r
+        LEFT JOIN doctors d ON r.doctor_id = d.id
+        WHERE ({recheck_expr}) > 0
+    '''
+    params = []
+    if year and month:
+        start = f'{year:04d}-{month:02d}-01'
+        if month == 12:
+            end = f'{year+1:04d}-01-01'
+        else:
+            end = f'{year:04d}-{month+1:02d}-01'
+        sql += ' AND r.treatment_date >= ? AND r.treatment_date < ?'
+        params += [start, end]
+    elif year:
+        sql += ' AND substr(r.treatment_date, 1, 4) = ?'
+        params.append(f'{year:04d}')
+    if doctor_id:
+        sql += ' AND r.doctor_id = ?'
+        params.append(doctor_id)
+    if contact_status is not None:
+        if contact_status == 0:
+            sql += ' AND (r.contact_status = 0 OR r.contact_status IS NULL)'
+        else:
+            sql += ' AND r.contact_status = ?'
+            params.append(contact_status)
+    if child_name:
+        sql += ' AND r.child_name LIKE ?'
+        params.append(f'%{child_name}%')
+    sql += ' ORDER BY r.treatment_date ASC, r.id ASC'
+    c.execute(sql, params)
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_contact(record_id, status, note=None):
+    conn = get_conn()
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if status == 0:
+        c.execute('''
+            UPDATE records SET contact_status = 0, contacted_at = NULL,
+                   contact_note = ?, updated_at = ? WHERE id = ?
+        ''', (note or '', now, record_id))
+    else:
+        c.execute('''
+            UPDATE records SET contact_status = 1, contacted_at = ?,
+                   contact_note = ?, updated_at = ? WHERE id = ?
+        ''', (now, note or '', now, record_id))
+    conn.commit()
+    conn.close()

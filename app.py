@@ -344,6 +344,7 @@ class SearchFrame(tk.Frame):
     def __init__(self, master):
         super().__init__(master, bg=BG_COLOR)
         self.current_results = []
+        self.recheck_results = []
         self.view_mode = 'list'
 
         top = tk.Frame(self, bg=BG_COLOR)
@@ -355,14 +356,22 @@ class SearchFrame(tk.Frame):
         view_bar = tk.Frame(self, bg=BG_COLOR)
         view_bar.pack(fill='x', padx=40, pady=(0, 5))
         self.btn_list_view = tk.Button(view_bar, text='明细列表', font=FONT_LARGE, bg=BTN_COLOR, fg='white',
-                                       relief='flat', cursor='hand2', width=12, command=self._switch_list_view)
-        self.btn_list_view.pack(side='left', padx=5)
+                                       relief='flat', cursor='hand2', width=11, command=self._switch_list_view)
+        self.btn_list_view.pack(side='left', padx=4)
         self.btn_summary_view = tk.Button(view_bar, text='月度汇总', font=FONT_LARGE, bg='#ffffff', fg='#606266',
-                                          relief='flat', cursor='hand2', width=12, command=self._switch_summary_view)
-        self.btn_summary_view.pack(side='left', padx=5)
-        self.btn_export = tk.Button(view_bar, text='导出 CSV', font=FONT_LARGE, bg=BTN_WARN, fg='white',
-                                    relief='flat', cursor='hand2', width=10, command=self._export_csv)
+                                          relief='flat', cursor='hand2', width=11, command=self._switch_summary_view)
+        self.btn_summary_view.pack(side='left', padx=4)
+        self.btn_recheck_view = tk.Button(view_bar, text='复查跟进', font=FONT_LARGE, bg='#ffffff', fg='#606266',
+                                          relief='flat', cursor='hand2', width=11, command=self._switch_recheck_view)
+        self.btn_recheck_view.pack(side='left', padx=4)
+
+        self.export_menu = tk.Menu(self, tearoff=0)
+        self.export_menu.add_command(label='明细 CSV（当前筛选结果）', command=self._export_csv)
+        self.export_menu.add_command(label='老板版月度汇总（含明细）', command=self._export_boss_summary)
+        self.btn_export = tk.Button(view_bar, text='▼ 导出', font=FONT_LARGE, bg=BTN_WARN, fg='white',
+                                    relief='flat', cursor='hand2', width=8)
         self.btn_export.pack(side='right', padx=5)
+        self.btn_export.bind('<Button-1>', self._show_export_menu)
 
         filter_frame = tk.Frame(self, bg=BG_COLOR)
         filter_frame.pack(fill='x', padx=30, pady=10)
@@ -403,7 +412,9 @@ class SearchFrame(tk.Frame):
 
         self.list_container = tk.Frame(self, bg=BG_COLOR)
         self.summary_container = tk.Frame(self, bg=BG_COLOR)
+        self.recheck_container = tk.Frame(self, bg=BG_COLOR)
 
+        # ===== 明细列表 =====
         columns = ('date', 'name', 'birth', 'phone', 'doctor', 'teeth', 'recheck')
         self.tree = ttk.Treeview(self.list_container, columns=columns, show='headings', height=18)
         self.tree.heading('date', text='治疗日期')
@@ -424,6 +435,7 @@ class SearchFrame(tk.Frame):
         style = ttk.Style()
         style.configure('Treeview', font=FONT_NORMAL, rowheight=32)
         style.configure('Treeview.Heading', font=FONT_LARGE)
+        self.tree.tag_configure('recheck', background='#fff1f0', foreground='#cf1322')
 
         tree_frame = tk.Frame(self.list_container)
         tree_frame.pack(fill='both', expand=True, padx=30, pady=10)
@@ -435,15 +447,16 @@ class SearchFrame(tk.Frame):
 
         tip_bar = tk.Frame(self.list_container, bg=BG_COLOR)
         tip_bar.pack(pady=10)
-        tk.Label(tip_bar, text='双击行查看/编辑详情', font=FONT_NORMAL, bg=BG_COLOR, fg='#909399',
+        tk.Label(tip_bar, text='双击行查看/编辑详情 · 红色行表示有牙位需复查', font=FONT_NORMAL, bg=BG_COLOR, fg='#909399',
                  relief='flat').pack()
 
+        # ===== 月度汇总 =====
         sum_columns = ('doctor', 'children', 'sealed_teeth', 'recheck_count', 'avg_teeth')
         self.summary_tree = ttk.Treeview(self.summary_container, columns=sum_columns, show='headings', height=20)
         self.summary_tree.heading('doctor', text='医生')
         self.summary_tree.heading('children', text='服务儿童数')
         self.summary_tree.heading('sealed_teeth', text='封闭牙数')
-        self.summary_tree.heading('recheck_count', text='需复查人次')
+        self.summary_tree.heading('recheck_count', text='需复查记录数')
         self.summary_tree.heading('avg_teeth', text='人均封闭牙数')
         self.summary_tree.column('doctor', width=180, anchor='center')
         self.summary_tree.column('children', width=160, anchor='center')
@@ -466,26 +479,95 @@ class SearchFrame(tk.Frame):
 
         sum_tip = tk.Frame(self.summary_container, bg=BG_COLOR)
         sum_tip.pack(pady=10)
-        tk.Label(sum_tip, text='选定月份后自动统计，双击医生行查看该医生当月明细', font=FONT_NORMAL, bg=BG_COLOR, fg='#909399',
-                 relief='flat').pack()
+        tk.Label(sum_tip, text='选定月份后自动统计 · 双击医生行查看该医生当月明细 · 复查按记录数统计（一条记录只要有牙位需复查就算1条）',
+                 font=FONT_NORMAL, bg=BG_COLOR, fg='#909399', relief='flat').pack()
+
+        # ===== 复查跟进 =====
+        rc_filter = tk.Frame(self.recheck_container, bg=BG_COLOR)
+        rc_filter.pack(fill='x', padx=30, pady=(10, 5))
+        tk.Label(rc_filter, text='联系状态：', font=FONT_LARGE, bg=BG_COLOR, fg='#303133').pack(side='left', padx=5)
+        self.rc_status_var = tk.StringVar(value='未联系')
+        rc_combo = ttk.Combobox(rc_filter, textvariable=self.rc_status_var,
+                                values=['全部', '未联系', '已联系'],
+                                font=FONT_LARGE, width=10, state='readonly')
+        rc_combo.pack(side='left', padx=5)
+        tk.Button(rc_filter, text='刷新', font=FONT_LARGE, bg=BTN_COLOR, fg='white',
+                  relief='flat', cursor='hand2', width=8, command=self._load_recheck).pack(side='left', padx=10)
+        tk.Button(rc_filter, text='标记已联系', font=FONT_LARGE, bg=BTN_OK, fg='white',
+                  relief='flat', cursor='hand2', width=12, command=self._mark_contacted).pack(side='right', padx=5)
+        tk.Button(rc_filter, text='标记未联系', font=FONT_LARGE, bg='#ffffff', fg='#606266',
+                  relief='flat', cursor='hand2', width=12, command=self._mark_uncontacted).pack(side='right', padx=5)
+
+        rc_columns = ('date', 'name', 'phone', 'doctor', 'teeth', 'contact', 'note')
+        self.recheck_tree = ttk.Treeview(self.recheck_container, columns=rc_columns, show='headings', height=16)
+        self.recheck_tree.heading('date', text='治疗日期')
+        self.recheck_tree.heading('name', text='儿童姓名')
+        self.recheck_tree.heading('phone', text='家长电话')
+        self.recheck_tree.heading('doctor', text='医生')
+        self.recheck_tree.heading('teeth', text='需复查牙位')
+        self.recheck_tree.heading('contact', text='联系状态')
+        self.recheck_tree.heading('note', text='联系备注')
+        self.recheck_tree.column('date', width=110, anchor='center')
+        self.recheck_tree.column('name', width=100, anchor='center')
+        self.recheck_tree.column('phone', width=130, anchor='center')
+        self.recheck_tree.column('doctor', width=90, anchor='center')
+        self.recheck_tree.column('teeth', width=220, anchor='w')
+        self.recheck_tree.column('contact', width=90, anchor='center')
+        self.recheck_tree.column('note', width=200, anchor='w')
+        rc_style = ttk.Style()
+        rc_style.configure('Rc.Treeview', font=FONT_NORMAL, rowheight=32)
+        rc_style.configure('Rc.Treeview.Heading', font=FONT_LARGE)
+        self.recheck_tree.configure(style='Rc.Treeview')
+        self.recheck_tree.tag_configure('done', background='#f6ffed', foreground='#389e0d')
+        self.recheck_tree.tag_configure('todo', background='#fff1f0', foreground='#cf1322')
+
+        rc_frame = tk.Frame(self.recheck_container)
+        rc_frame.pack(fill='both', expand=True, padx=30, pady=10)
+        self.recheck_tree.pack(side='left', fill='both', expand=True)
+        rsb = ttk.Scrollbar(rc_frame, orient='vertical', command=self.recheck_tree.yview)
+        rsb.pack(side='right', fill='y')
+        self.recheck_tree.configure(yscrollcommand=rsb.set)
+        self.recheck_tree.bind('<Double-1>', self._open_recheck_detail)
+
+        rc_tip = tk.Frame(self.recheck_container, bg=BG_COLOR)
+        rc_tip.pack(pady=10)
+        tk.Label(rc_tip, text='红色=未联系 · 绿色=已联系 · 双击行查看详情或补写复查结论',
+                 font=FONT_NORMAL, bg=BG_COLOR, fg='#909399', relief='flat').pack()
 
         self._do_search()
         self._switch_list_view()
 
+    def _show_export_menu(self, event):
+        self.export_menu.tk_popup(event.x_root, event.y_root)
+
     def _switch_list_view(self):
         self.view_mode = 'list'
         self.summary_container.pack_forget()
+        self.recheck_container.pack_forget()
         self.list_container.pack(fill='both', expand=True)
         self.btn_list_view.config(bg=BTN_COLOR, fg='white')
         self.btn_summary_view.config(bg='#ffffff', fg='#606266')
+        self.btn_recheck_view.config(bg='#ffffff', fg='#606266')
 
     def _switch_summary_view(self):
         self.view_mode = 'summary'
         self.list_container.pack_forget()
+        self.recheck_container.pack_forget()
         self.summary_container.pack(fill='both', expand=True)
         self.btn_list_view.config(bg='#ffffff', fg='#606266')
         self.btn_summary_view.config(bg=BTN_COLOR, fg='white')
+        self.btn_recheck_view.config(bg='#ffffff', fg='#606266')
         self._load_summary()
+
+    def _switch_recheck_view(self):
+        self.view_mode = 'recheck'
+        self.list_container.pack_forget()
+        self.summary_container.pack_forget()
+        self.recheck_container.pack(fill='both', expand=True)
+        self.btn_list_view.config(bg='#ffffff', fg='#606266')
+        self.btn_summary_view.config(bg='#ffffff', fg='#606266')
+        self.btn_recheck_view.config(bg=BTN_COLOR, fg='white')
+        self._load_recheck()
 
     def _load_doctors(self):
         doctors = db.get_doctors()
@@ -500,6 +582,9 @@ class SearchFrame(tk.Frame):
             r = '复' if row.get(f'tooth{pos}_recheck') else '·'
             parts.append(f'{pos}:{s}{p}{r}')
         return '  '.join(parts)
+
+    def _need_recheck(self, row):
+        return any(row.get(f'tooth{p}_recheck') for p in db.TOOTH_POSITIONS)
 
     def _do_search(self):
         for i in self.tree.get_children():
@@ -527,6 +612,9 @@ class SearchFrame(tk.Frame):
             if r.get('remark'):
                 remark_parts.append(r['remark'][:12])
             remark = ' | '.join(remark_parts)
+            tags = ()
+            if self._need_recheck(r) and not r.get('recheck_result'):
+                tags = ('recheck',)
             self.tree.insert('', 'end', iid=str(r['id']), values=(
                 r['treatment_date'],
                 r['child_name'],
@@ -535,12 +623,15 @@ class SearchFrame(tk.Frame):
                 r.get('doctor_name') or '',
                 self._teeth_summary(r),
                 remark,
-            ))
+            ), tags=tags)
         total = len(rows)
         sealed_count = sum(1 for r in rows if any(r.get(f'tooth{p}_sealed') for p in db.TOOTH_POSITIONS))
-        self.stat_label.config(text=f'共 {total} 条记录，其中已做封闭 {sealed_count} 人')
+        recheck_count = sum(1 for r in rows if self._need_recheck(r))
+        self.stat_label.config(text=f'共 {total} 条记录，已做封闭 {sealed_count} 人，需复查 {recheck_count} 条')
         if self.view_mode == 'summary':
             self._load_summary()
+        elif self.view_mode == 'recheck':
+            self._load_recheck()
 
     def _load_summary(self):
         for i in self.summary_tree.get_children():
@@ -606,6 +697,88 @@ class SearchFrame(tk.Frame):
         rid = int(sel[0])
         DetailDialog(self, rid, on_saved=self._do_search)
 
+    # ===== 复查跟进 =====
+    def _load_recheck(self):
+        for i in self.recheck_tree.get_children():
+            self.recheck_tree.delete(i)
+        y = self.year_var.get()
+        m = self.month_var.get()
+        year = None if y == '全部' else int(y)
+        month = None if m == '全部' else int(m)
+        doc_name = self.doctor_var.get()
+        doctor_id = None
+        if doc_name != '全部':
+            for d in self.doctor_list:
+                if d['name'] == doc_name:
+                    doctor_id = d['id']
+                    break
+        name = self.name_entry.get().strip() or None
+        status = self.rc_status_var.get()
+        contact_status = None
+        if status == '已联系':
+            contact_status = 1
+        elif status == '未联系':
+            contact_status = 0
+        rows = db.get_recheck_list(year=year, month=month, doctor_id=doctor_id,
+                                   contact_status=contact_status, child_name=name)
+        self.recheck_results = rows
+        for r in rows:
+            teeth_parts = []
+            for pos in db.TOOTH_POSITIONS:
+                if r.get(f'tooth{pos}_recheck'):
+                    teeth_parts.append(pos)
+            teeth_str = '、'.join(teeth_parts)
+            is_contacted = r.get('contact_status') == 1
+            tag = 'done' if is_contacted else 'todo'
+            contact_text = '已联系' if is_contacted else '未联系'
+            note = (r.get('contact_note') or '')[:20]
+            self.recheck_tree.insert('', 'end', iid=str(r['id']), values=(
+                r['treatment_date'],
+                r['child_name'],
+                r.get('parent_phone') or '',
+                r.get('doctor_name') or '',
+                teeth_str,
+                contact_text,
+                note,
+            ), tags=(tag,))
+        total = len(rows)
+        contacted = sum(1 for r in rows if r.get('contact_status') == 1)
+        self.stat_label.config(text=f'需复查共 {total} 条，已联系 {contacted} 条，未联系 {total - contacted} 条')
+
+    def _open_recheck_detail(self, event):
+        sel = self.recheck_tree.selection()
+        if not sel:
+            return
+        rid = int(sel[0])
+        DetailDialog(self, rid, on_saved=self._do_search)
+
+    def _mark_contacted(self):
+        sel = self.recheck_tree.selection()
+        if not sel:
+            messagebox.showinfo('提示', '请先选择要标记的记录')
+            return
+        note = simpledialog.askstring('联系备注', '请输入联系备注（可选）：', parent=self)
+        count = 0
+        for iid in sel:
+            rid = int(iid)
+            db.update_contact(rid, 1, note)
+            count += 1
+        messagebox.showinfo('成功', f'已标记 {count} 条为已联系')
+        self._load_recheck()
+
+    def _mark_uncontacted(self):
+        sel = self.recheck_tree.selection()
+        if not sel:
+            messagebox.showinfo('提示', '请先选择要标记的记录')
+            return
+        if not messagebox.askyesno('确认', f'确认将选中的 {len(sel)} 条标记为未联系吗？'):
+            return
+        for iid in sel:
+            rid = int(iid)
+            db.update_contact(rid, 0, '')
+        self._load_recheck()
+
+    # ===== 导出 =====
     def _export_csv(self):
         if not self.current_results:
             messagebox.showinfo('提示', '当前没有可导出的数据')
@@ -625,7 +798,7 @@ class SearchFrame(tk.Frame):
         ]
         for pos in db.TOOTH_POSITIONS:
             headers += [f'{pos}封闭', f'{pos}拍照', f'{pos}复查']
-        headers += ['家长反馈', '复查结果', '备注', '创建时间', '更新时间']
+        headers += ['家长反馈', '复查结果', '备注', '联系状态', '联系时间', '联系备注', '创建时间', '更新时间']
         try:
             with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
@@ -648,11 +821,91 @@ class SearchFrame(tk.Frame):
                         r.get('parent_feedback', ''),
                         r.get('recheck_result', ''),
                         r.get('remark', ''),
+                        '已联系' if r.get('contact_status') == 1 else '未联系',
+                        r.get('contacted_at') or '',
+                        r.get('contact_note') or '',
                         r.get('created_at', ''),
                         r.get('updated_at', ''),
                     ]
                     writer.writerow(row)
             messagebox.showinfo('成功', f'已导出 {len(self.current_results)} 条记录到：\n{path}')
+        except Exception as e:
+            messagebox.showerror('错误', f'导出失败：{str(e)}')
+
+    def _export_boss_summary(self):
+        y = self.year_var.get()
+        m = self.month_var.get()
+        if y == '全部' or m == '全部':
+            messagebox.showwarning('提示', '请先选择具体的年份和月份，再导出老板版汇总')
+            return
+        year = int(y)
+        month = int(m)
+        default_name = f'{year}年{month}月_窝沟封闭汇总_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title='导出老板版月度汇总',
+            defaultextension='.csv',
+            initialfile=default_name,
+            filetypes=[('CSV 表格', '*.csv'), ('所有文件', '*.*')],
+        )
+        if not path:
+            return
+        summary = db.get_monthly_summary(year, month)
+        try:
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow([f'{year}年{month}月 窝沟封闭月度汇总'])
+                writer.writerow([])
+                writer.writerow(['医生', '服务儿童数', '封闭牙数', '需复查记录数', '人均封闭牙数'])
+                total_child = 0
+                total_sealed = 0
+                total_recheck = 0
+                for s in summary:
+                    avg = round(s['sealed_teeth'] / s['children_count'], 1) if s['children_count'] > 0 else 0
+                    writer.writerow([
+                        s['doctor_name'], s['children_count'], s['sealed_teeth'],
+                        s['recheck_count'], avg,
+                    ])
+                    total_child += s['children_count']
+                    total_sealed += s['sealed_teeth']
+                    total_recheck += s['recheck_count']
+                if total_child > 0:
+                    avg_total = round(total_sealed / total_child, 1)
+                    writer.writerow(['合计', total_child, total_sealed, total_recheck, avg_total])
+                writer.writerow([])
+                writer.writerow(['===== 各医生明细 ====='])
+
+                for s in summary:
+                    writer.writerow([])
+                    writer.writerow([f'【{s["doctor_name"]}】{s["children_count"]}人 / {s["sealed_teeth"]}颗牙 / {s["recheck_count"]}条需复查'])
+                    writer.writerow([
+                        '治疗日期', '儿童姓名', '出生年', '家长电话',
+                        '16封闭', '16拍照', '16复查',
+                        '26封闭', '26拍照', '26复查',
+                        '36封闭', '36拍照', '36复查',
+                        '46封闭', '46拍照', '46复查',
+                        '家长反馈', '复查结果', '备注', '联系状态',
+                    ])
+                    doctor_id = s.get('doctor_id')
+                    rows = db.search_records(year=year, month=month, doctor_id=doctor_id)
+                    for r in rows:
+                        row = [
+                            r['treatment_date'], r['child_name'], r.get('birth_year') or '', r.get('parent_phone') or '',
+                        ]
+                        for pos in db.TOOTH_POSITIONS:
+                            row += [
+                                '是' if r.get(f'tooth{pos}_sealed') else '否',
+                                '是' if r.get(f'tooth{pos}_photo') else '否',
+                                '是' if r.get(f'tooth{pos}_recheck') else '否',
+                            ]
+                        row += [
+                            r.get('parent_feedback') or '',
+                            r.get('recheck_result') or '',
+                            r.get('remark') or '',
+                            '已联系' if r.get('contact_status') == 1 else '未联系',
+                        ]
+                        writer.writerow(row)
+            messagebox.showinfo('成功', f'老板版汇总已导出到：\n{path}')
         except Exception as e:
             messagebox.showerror('错误', f'导出失败：{str(e)}')
 
@@ -733,17 +986,17 @@ class DetailDialog(tk.Toplevel):
         self.remark_text.insert('1.0', r.get('remark') or '')
         self.remark_text.grid(row=2, column=1, sticky='w', pady=4)
 
-        history = tk.LabelFrame(self, text='同电话的历史服务记录（按日期倒序）', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', padx=10, pady=8)
-        history.pack(fill='both', expand=False, padx=30, pady=8)
+        history = tk.LabelFrame(self, text='同电话的历史服务记录（半年内的在前 · 双击查看完整详情）', font=FONT_LARGE, bg=BG_COLOR, fg='#303133', padx=10, pady=8)
+        history.pack(fill='both', expand=True, padx=30, pady=8)
 
         history_cols = ('date', 'name', 'doctor', 'teeth', 'recheck')
-        self.history_tree = ttk.Treeview(history, columns=history_cols, show='headings', height=6)
+        self.history_tree = ttk.Treeview(history, columns=history_cols, show='headings', height=8)
         self.history_tree.heading('date', text='治疗日期')
         self.history_tree.heading('name', text='儿童姓名')
         self.history_tree.heading('doctor', text='医生')
         self.history_tree.heading('teeth', text='牙位/封闭/复查')
         self.history_tree.heading('recheck', text='复查结论')
-        self.history_tree.column('date', width=110, anchor='center')
+        self.history_tree.column('date', width=130, anchor='center')
         self.history_tree.column('name', width=100, anchor='center')
         self.history_tree.column('doctor', width=90, anchor='center')
         self.history_tree.column('teeth', width=340, anchor='w')
@@ -753,7 +1006,10 @@ class DetailDialog(tk.Toplevel):
         hstyle.configure('Hist.Treeview.Heading', font=FONT_NORMAL)
         self.history_tree.configure(style='Hist.Treeview')
         self.history_tree.tag_configure('half_year', background='#fff7e6', foreground='#d46b08')
-        self.history_tree.pack(fill='x', expand=False)
+        self.history_tree.tag_configure('older', background='#ffffff', foreground='#606266')
+        self.history_tree.tag_configure('sep', background='#e4e7ed')
+        self.history_tree.pack(fill='both', expand=True)
+        self.history_tree.bind('<Double-1>', self._open_history_detail)
 
         self._load_history()
 
@@ -777,27 +1033,74 @@ class DetailDialog(tk.Toplevel):
             self.history_tree.insert('', 'end', values=('（暂无历史记录）', '', '', '', ''))
             return
         current_date = datetime.strptime(self.record['treatment_date'], '%Y-%m-%d')
+
+        half_year_list = []
+        older_list = []
         for h in history:
-            teeth_parts = []
-            for pos in db.TOOTH_POSITIONS:
-                s = '封' if h.get(f'tooth{pos}_sealed') else '·'
-                r = '复' if h.get(f'tooth{pos}_recheck') else '·'
-                teeth_parts.append(f'{pos}:{s}{r}')
-            teeth_str = '  '.join(teeth_parts)
             days_diff = (current_date - datetime.strptime(h['treatment_date'], '%Y-%m-%d')).days
-            tags = ()
-            label = h['treatment_date']
             if 0 <= days_diff <= 180:
-                tags = ('half_year',)
-                label = f'{label}（{days_diff}天前）'
-            recheck = (h.get('recheck_result') or '')[:20]
-            self.history_tree.insert('', 'end', values=(
-                label,
-                h.get('child_name', ''),
-                h.get('doctor_name') or '',
-                teeth_str,
-                recheck,
-            ), tags=tags)
+                half_year_list.append((h, days_diff))
+            else:
+                older_list.append((h, days_diff))
+
+        half_year_list.sort(key=lambda x: x[1])
+        older_list.sort(key=lambda x: -x[1])
+
+        if half_year_list:
+            label_id = self.history_tree.insert('', 'end',
+                values=('── 半年内（共{}条）──'.format(len(half_year_list)), '', '', '', ''),
+                tags=('sep',))
+            self.history_tree.item(label_id, open=False)
+            for h, days_diff in half_year_list:
+                teeth_parts = []
+                for pos in db.TOOTH_POSITIONS:
+                    s = '封' if h.get(f'tooth{pos}_sealed') else '·'
+                    r = '复' if h.get(f'tooth{pos}_recheck') else '·'
+                    teeth_parts.append(f'{pos}:{s}{r}')
+                teeth_str = '  '.join(teeth_parts)
+                recheck = (h.get('recheck_result') or '')[:20]
+                self.history_tree.insert('', 'end', iid=f'h_{h["id"]}', values=(
+                    f'{h["treatment_date"]}（{days_diff}天前）',
+                    h.get('child_name', ''),
+                    h.get('doctor_name') or '',
+                    teeth_str,
+                    recheck,
+                ), tags=('half_year',))
+
+        if older_list:
+            label_id = self.history_tree.insert('', 'end',
+                values=('── 更早（共{}条）──'.format(len(older_list)), '', '', '', ''),
+                tags=('sep',))
+            self.history_tree.item(label_id, open=False)
+            for h, days_diff in older_list:
+                teeth_parts = []
+                for pos in db.TOOTH_POSITIONS:
+                    s = '封' if h.get(f'tooth{pos}_sealed') else '·'
+                    r = '复' if h.get(f'tooth{pos}_recheck') else '·'
+                    teeth_parts.append(f'{pos}:{s}{r}')
+                teeth_str = '  '.join(teeth_parts)
+                recheck = (h.get('recheck_result') or '')[:20]
+                self.history_tree.insert('', 'end', iid=f'h_{h["id"]}', values=(
+                    h['treatment_date'],
+                    h.get('child_name', ''),
+                    h.get('doctor_name') or '',
+                    teeth_str,
+                    recheck,
+                ), tags=('older',))
+
+    def _open_history_detail(self, event):
+        sel = self.history_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if not iid.startswith('h_'):
+            return
+        rid = int(iid.replace('h_', ''))
+        DetailDialog(self, rid, on_saved=lambda: (self._load_history(), self._on_child_saved()))
+
+    def _on_child_saved(self):
+        if hasattr(self, 'on_saved') and self.on_saved:
+            self.on_saved()
 
     def _save(self):
         name = self.name_var.get().strip()
